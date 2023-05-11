@@ -9,7 +9,8 @@
 </head>
 
 <body>
-    <canvas width="512" height="512">
+    <P>Hello</P>
+    <canvas id="canvas" width="512" height="512">
 
     </canvas>
     <script type="module">
@@ -18,6 +19,55 @@
         if (!navigator.gpu) {
             throw new Error("WebGPU not supported on this browser.");
         }
+
+        // Once you know that WebGPU is supported by the browser, the first step in initializing WebGPU for your app is to request a GPUAdapter. 
+        // You can think of an adapter as WebGPU's representation of a specific piece of GPU hardware in your device.
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+            throw new Error("No appropriate GPUAdapter found");
+        }
+
+        const device = await adapter.requestDevice();
+        console.log("device", device);
+
+        // the device that you are going to use the context with 
+        // the format, which is the texture format that the context should use.
+        const context = canvas.getContext("webgpu");
+        const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+        console.log("canvasFormat", canvasFormat);
+        context.configure({
+            device: device,
+            format: canvasFormat,
+        });
+
+        // Clear the canvas
+        const encoder = device.createCommandEncoder();
+
+        // Render passes are when all drawing operations in WebGPU happen
+
+        // A loadOp value of "clear" indicates that you want the texture to be cleared when the render pass starts.
+        // A storeOp value of "store" indicates that once the render pass is finished you want the results of any drawing done during the render pass saved into the texture.
+        const pass = encoder.beginRenderPass({
+            colorAttachments: [
+                {
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: "clear",
+                    storeOp: "store",
+                    clearValue: { r: 0, g: 0, b: 0.4, a: 1 }, // New line
+                }
+            ]
+        });
+
+        // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
+        pass.end();
+
+        // command buffer store the commands
+        // then queue to GPU
+        // Once you submit a command buffer, it cannot be used again, so there's no need to hold on to it. If you want to submit more commands, you need to build another command buffer. That's why it's fairly common to see those two steps collapsed into one, as is done in the sample pages for this codelab:
+        const commandBuffer = encoder.finish();
+        device.queue.submit([commandBuffer]);
+
+        // After you submit the commands to the GPU, let JavaScript return control to the browser. At that point, the browser sees that you've changed the current texture of the context and updates the canvas to display that texture as an image. If you want to update the canvas contents again after that, you need to record and submit a new command buffer, calling context.getCurrentTexture() again to get a new texture for a render pass.
     </script>
 </body>
 
