@@ -5,9 +5,11 @@
 
 ## Diagrams
 High level:
+
 ![High Level](docs/high-level.svg)
 
 Render:
+
 ![Render](docs/render.svg)
 
 ## Resource
