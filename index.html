@@ -40,6 +40,67 @@
             format: canvasFormat,
         });
 
+        // Note: You don't have to repeat the vertex data in order to make triangles. Using something called Index Buffers, you can feed a separate list of values to the GPU that tells it what vertices to connect together into triangles so that they don't need to be duplicated. It's like connect-the-dots! Because your vertex data is so simple, using Index Buffers is out of scope for this Codelab. But they're definitely something that you might want to make use of for more complex geometry.
+        const vertices = new Float32Array([
+            //   X,    Y,
+            -0.8, -0.8, // Triangle 1 (Blue)
+            0.8, -0.8,
+            0.8, 0.8,
+
+            -0.8, -0.8, // Triangle 2 (Red)
+            0.8, 0.8,
+            -0.8, 0.8,
+        ]);
+
+        // GPUs frequently have their own memory that is highly optimized for rendering, and so any data you want the GPU to use while it draws needs to be placed in that memory.
+        const vertexBuffer = device.createBuffer({
+            label: "Cell vertices",
+            size: vertices.byteLength,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+
+        // The buffer object that gets returned to you is opaque—you can't (easily) inspect the data it holds. Additionally, most of its attributes are immutable—you can't resize a GPUBuffer after it's been created, nor can you change the usage flags. What you can change are the contents of its memory.
+        device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
+
+        // Tell WebGPU more about the structure of the vertex data.
+        const vertexBufferLayout = {
+            // This is the number of bytes the GPU needs to skip forward in the buffer when it's looking for the next vertex, we use X, Y with flat32, floats, so it is 8 bytes
+            arrayStride: 8,
+
+            //  individual pieces of information encoded into each vertex
+            //  could be color, or direction of geometry
+            // use as vertex shader input
+            attributes: [{
+                format: "float32x2",
+                offset: 0,
+                shaderLocation: 0, // Position, see vertex shader
+            }],
+        };
+
+        // Vertex processing shader
+        //  as a vertex shader must return at least the final position of the vertex being processed in clip space. This is always given as a 4-dimensional vector. Vectors are such a common thing to use in shaders that they're treated as first-class primitives in the language, with their own types like vec4f for a 4-dimensional vector
+
+        // Fragment Shader
+        // Fragment shaders operate in a very similar way to vertex shaders, but rather than being invoked for every vertex, they're invoked for every pixel being drawn.
+        // The GPU takes the output of the vertex shaders and triangulates it, creating triangles out of sets of three points. It then rasterizes each of those triangles by figuring out which pixels of the output color attachments are included in that triangle, and then calls the fragment shader once for each of those pixels. The fragment shader returns a color, typically calculated from values sent to it from the vertex shader and assets like textures, which the GPU writes to the color attachmen
+        // but you can consider them to simply return one color for each pixel of each triangle.
+        const cellShaderModule = device.createShaderModule({
+            label: "Cell shader",
+            code: `
+                @vertex
+                fn vertexMain(@location(0) pos: vec2f) -> 
+                    @builtin(position) vec4f {
+                    // return vec4f(pos.x, pos.y, 0, 1); // (X, Y, Z, W)
+                    return vec4f(pos, 0, 1); // (X, Y, Z, W)
+                }
+
+                @fragment
+                fn fragmentMain() -> @location(0) vec4f {
+                    return vec4f(1, 0, 0, 1); // (Red, Green, Blue, Alpha)
+                }
+            `
+        });
+
         // Clear the canvas
         const encoder = device.createCommandEncoder();
 
@@ -57,6 +118,29 @@
                 }
             ]
         });
+
+        const cellPipeline = device.createRenderPipeline({
+            label: "Cell pipeline",
+            layout: "auto",
+            vertex: {
+                module: cellShaderModule,
+                entryPoint: "vertexMain",
+                buffers: [vertexBufferLayout]
+            },
+            fragment: {
+                module: cellShaderModule,
+                entryPoint: "fragmentMain",
+                targets: [{
+                    format: canvasFormat
+                }]
+            }
+        });
+
+        // drawing triangle
+        pass.setPipeline(cellPipeline);
+        //  You call it with 0 because this buffer corresponds to the 0th element in the current pipeline's vertex.buffers definition
+        pass.setVertexBuffer(0, vertexBuffer);
+        pass.draw(vertices.length / 2); // 6 vertices
 
         // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
         pass.end();
