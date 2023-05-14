@@ -88,6 +88,24 @@
         });
         device.queue.writeBuffer(uniformBuffer, /*bufferOffset=*/0, uniformArray);
 
+        // Create an array representing the active state of each cell.
+        // on-off signal for each cell
+        // You might think that this is another use case for uniform buffers! While you could make that work, it's more difficult because uniform buffers are limited in size, can't support dynamically sized arrays (you have to specify the array size in the shader), and can't be written to by compute shaders. That last item is the most problematic, since you want to do the Game of Life simulation on the GPU in a compute shader.
+        // Storage buffers are general-use buffers that can be read and written to in compute shaders, and read in vertex shaders. They can be very large, and they don't need a specific declared size in a shader, which makes them much more like general memory. That's what you use to store the cell state.
+        const cellStateArray = new Uint32Array(GRID_SIZE * GRID_SIZE);
+
+        // Create a storage buffer to hold the cell state.
+        const cellStateStorage = device.createBuffer({
+            label: "Cell State",
+            size: cellStateArray.byteLength,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        // Mark every third cell of the grid as active.
+        for (let i = 0; i < cellStateArray.length; i += 3) {
+            cellStateArray[i] = 1;
+        }
+        device.queue.writeBuffer(cellStateStorage, 0, cellStateArray);
+
         // Vertex processing shader
         //  as a vertex shader must return at least the final position of the vertex being processed in clip space. This is always given as a 4-dimensional vector. Vectors are such a common thing to use in shaders that they're treated as first-class primitives in the language, with their own types like vec4f for a 4-dimensional vector
 
@@ -111,6 +129,7 @@
 
                 // This uniform buffer is shared by both vertex and fragment shader
                 @group(0) @binding(0) var<uniform> grid: vec2f;
+                @group(0) @binding(1) var<storage> cellState: array<u32>; // New!
 
                 @vertex
                 fn vertexMain(input: VertexInput) -> VertexOutput {
@@ -122,13 +141,16 @@
                     // let cell = vec2f(i, i);
                     let i = f32(input.instance); // Save the instance_index as a float
                     let cell = vec2f(i % grid.x, floor(i / grid.x));
+                    let state = f32(cellState[input.instance]);
                     let cellOffset = cell / grid * 2; // Compute the offset to cell in term of cas coordination
-                    let leftBottomPos = (input.pos + 1) / grid - 1; // Translate to the left bottom
+
+                    // Translate to the left bottom and Scale the position by the cell's active state.
+                    let leftBottomPos = (input.pos * state + 1) / grid - 1; 
                     let gridPos = leftBottomPos + cellOffset; // Translate the left bottom with offset
 
                     var output: VertexOutput;
                     output.pos = vec4f(gridPos, 0, 1);
-                    output.cell = cell; // it tell fragment shader which cell we are rendering
+                    output.cell = cell; // it tell fragment shader which cell (0-32, 0-32) we are rendering
 
                     return output;
                 }
@@ -190,11 +212,18 @@
             label: "Cell renderer bind group",
             //  0 corresponds to the @group(0) that you typed in the shader.
             layout: cellPipeline.getBindGroupLayout(0),
-            entries: [{
-                // @binding() value you entered in the shader. In this case, 0
-                binding: 0,
-                resource: { buffer: uniformBuffer }
-            }],
+            entries: [
+                {
+                    // @binding() value you entered in the shader. In this case, 0
+                    binding: 0,
+                    resource: { buffer: uniformBuffer }
+                },
+                {
+                    // @binding() value you entered in the shader. In this case, 1
+                    binding: 1,
+                    resource: { buffer: cellStateStorage }
+                },
+            ],
         });
 
         // drawing triangle
