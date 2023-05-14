@@ -9,7 +9,7 @@
 </head>
 
 <body>
-    <p>Following is rendered by GPU</p>
+    <p>Following is rendered by Web GPU</p>
     <canvas id="canvas" width="512" height="512">
 
     </canvas>
@@ -99,30 +99,51 @@
         const cellShaderModule = device.createShaderModule({
             label: "Cell shader",
             code: `
+                struct VertexInput {
+                    @location(0) pos: vec2f,
+                    @builtin(instance_index) instance: u32,
+                };
+
+                struct VertexOutput {
+                    @builtin(position) pos: vec4f,
+                    @location(0) cell: vec2f,
+                };
+
+                // This uniform buffer is shared by both vertex and fragment shader
                 @group(0) @binding(0) var<uniform> grid: vec2f;
 
                 @vertex
-                fn vertexMain(@location(0) pos: vec2f,
-                              @builtin(instance_index) instance: u32) ->
-                    @builtin(position) vec4f {
+                fn vertexMain(input: VertexInput) -> VertexOutput {
                     // return vec4f(pos.x, pos.y, 0, 1); // (X, Y, Z, W)
                     // return vec4f(pos, 0, 1); // (X, Y, Z, W)
                     // return vec4f(pos / grid, 0, 1); // (X, Y, Z, W)
 
                     // let cell = vec2f(1, 1); // Cell(1,1) in the image above
                     // let cell = vec2f(i, i);
-                    let i = f32(instance); // Save the instance_index as a float
+                    let i = f32(input.instance); // Save the instance_index as a float
                     let cell = vec2f(i % grid.x, floor(i / grid.x));
                     let cellOffset = cell / grid * 2; // Compute the offset to cell in term of cas coordination
-                    let leftBottomPos = (pos + 1) / grid - 1; // Translate to the left bottom
+                    let leftBottomPos = (input.pos + 1) / grid - 1; // Translate to the left bottom
                     let gridPos = leftBottomPos + cellOffset; // Translate the left bottom with offset
 
-                    return vec4f(gridPos, 0, 1);
+                    var output: VertexOutput;
+                    output.pos = vec4f(gridPos, 0, 1);
+                    output.cell = cell; // it tell fragment shader which cell we are rendering
+
+                    return output;
                 }
 
                 @fragment
-                fn fragmentMain() -> @location(0) vec4f {
-                    return vec4f(1, 0, 0, 1); // (Red, Green, Blue, Alpha)
+                fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+                    // return vec4f(1, 0, 0, 1); // (Red, Green, Blue, Alpha)
+
+                    // Remember, fragment return values are (Red, Green, Blue, Alpha)
+                    // and since cell is a 2D vector, this is equivalent to:
+                    // (Red = cell.x, Green = cell.y, Blue = 0, Alpha = 1) input.cell which range from 0-32
+                    // return vec4f(input.cell / grid, 0, 1);
+
+                    let c = input.cell / grid;
+                    return vec4f(c, 1-c.x, 1);
                 }
             `
         });
@@ -168,7 +189,7 @@
         const bindGroup = device.createBindGroup({
             label: "Cell renderer bind group",
             //  0 corresponds to the @group(0) that you typed in the shader.
-            layout: cellPipeline.getBindGroupLayout(0), 
+            layout: cellPipeline.getBindGroupLayout(0),
             entries: [{
                 // @binding() value you entered in the shader. In this case, 0
                 binding: 0,
@@ -182,10 +203,10 @@
         pass.setVertexBuffer(0, vertexBuffer);
         pass.setBindGroup(0, bindGroup);
 
-        // To tell the GPU that you want enough instances of your square to fill the grid, 
+        // To tell the GPU that you want enough instances of your square to fill the grid,
         // add one argument to your existing draw call:
         // draw 6 vertices with GRID_SIZE * GRID_SIZE times
-        pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE); 
+        pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
 
         // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
         pass.end();
