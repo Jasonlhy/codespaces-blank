@@ -95,16 +95,30 @@
         const cellStateArray = new Uint32Array(GRID_SIZE * GRID_SIZE);
 
         // Create a storage buffer to hold the cell state.
-        const cellStateStorage = device.createBuffer({
-            label: "Cell State",
-            size: cellStateArray.byteLength,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
-        // Mark every third cell of the grid as active.
+        const cellStateStorage = [
+            device.createBuffer({
+                label: "Cell State A",
+                size: cellStateArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            }),
+            device.createBuffer({
+                label: "Cell State B",
+                size: cellStateArray.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            })
+        ];
+
+        // Mark every third cell of the first grid as active.
         for (let i = 0; i < cellStateArray.length; i += 3) {
             cellStateArray[i] = 1;
         }
-        device.queue.writeBuffer(cellStateStorage, 0, cellStateArray);
+        device.queue.writeBuffer(cellStateStorage[0], 0, cellStateArray);
+
+        // Mark every other cell of the second grid as active.
+        for (let i = 0; i < cellStateArray.length; i++) {
+            cellStateArray[i] = i % 2;
+        }
+        device.queue.writeBuffer(cellStateStorage[1], 0, cellStateArray);
 
         // Vertex processing shader
         //  as a vertex shader must return at least the final position of the vertex being processed in clip space. This is always given as a 4-dimensional vector. Vectors are such a common thing to use in shaders that they're treated as first-class primitives in the language, with their own types like vec4f for a 4-dimensional vector
@@ -170,83 +184,113 @@
             `
         });
 
-        // Clear the canvas
-        const encoder = device.createCommandEncoder();
+        const UPDATE_INTERVAL = 200; // Update every 200ms (5 times/sec)
+        let step = 0; // Track how many simulation steps have been run
+        
+        // The render which clip the state with ping-pong pattern with different bind group
+        function updateGrid() {
+            step++;
 
-        // A loadOp value of "clear" indicates that you want the texture to be cleared when the render pass starts.
-        // A storeOp value of "store" indicates that once the render pass is finished you want the results of any drawing done during the render pass saved into the texture.
-        const pass = encoder.beginRenderPass({
-            colorAttachments: [
-                {
-                    view: context.getCurrentTexture().createView(),
-                    loadOp: "clear",
-                    storeOp: "store",
-                    clearValue: { r: 0, g: 0, b: 0.4, a: 1 }, // New line
+            // Clear the canvas
+            const encoder = device.createCommandEncoder();
+
+            // A loadOp value of "clear" indicates that you want the texture to be cleared when the render pass starts.
+            // A storeOp value of "store" indicates that once the render pass is finished you want the results of any drawing done during the render pass saved into the texture.
+            const pass = encoder.beginRenderPass({
+                colorAttachments: [
+                    {
+                        view: context.getCurrentTexture().createView(),
+                        loadOp: "clear",
+                        storeOp: "store",
+                        clearValue: { r: 0, g: 0, b: 0.4, a: 1 }, // New line
+                    }
+                ]
+            });
+
+            // Render passes are when all drawing operations in WebGPU happen
+            const cellPipeline = device.createRenderPipeline({
+                label: "Cell pipeline",
+                layout: "auto",
+                vertex: {
+                    module: cellShaderModule,
+                    entryPoint: "vertexMain",
+                    buffers: [vertexBufferLayout]
+                },
+                fragment: {
+                    module: cellShaderModule,
+                    entryPoint: "fragmentMain",
+                    targets: [{
+                        format: canvasFormat
+                    }]
                 }
-            ]
-        });
+            });
 
-        // Render passes are when all drawing operations in WebGPU happen
-        const cellPipeline = device.createRenderPipeline({
-            label: "Cell pipeline",
-            layout: "auto",
-            vertex: {
-                module: cellShaderModule,
-                entryPoint: "vertexMain",
-                buffers: [vertexBufferLayout]
-            },
-            fragment: {
-                module: cellShaderModule,
-                entryPoint: "fragmentMain",
-                targets: [{
-                    format: canvasFormat
-                }]
-            }
-        });
+            // Declaring the uniform in the shader doesn't connect it with the buffer that you created, though. In order  do that, you need to create and set a bind group.
+            // A bind group is a collection of resources that you want to make accessible to your shader at the same time. It can include several types of buffers, like your uniform buffer, and other resources like textures and samplers that are not covered here but are common parts of WebGPU rendering techniques.
+            // which is an opaque, immutable handle. You can't change the resources that a bind group points to after it's been created, though you can change the contents of those resources
+            //  For example, if you change the uniform buffer to contain a new grid size, that is reflected by future draw calls using this bind group.
+            const bindGroups = [
+                device.createBindGroup({
+                    label: "Cell renderer bind group A",
+                    //  0 corresponds to the @group(0) that you typed in the shader.
+                    layout: cellPipeline.getBindGroupLayout(0),
+                    entries: [
+                        {
+                            // @binding() value you entered in the shader. In this case, 0
+                            binding: 0,
+                            resource: { buffer: uniformBuffer }
+                        },
+                        {
+                            // @binding() value you entered in the shader. In this case, 1
+                            binding: 1,
+                            resource: { buffer: cellStateStorage[0] }
+                        },
+                    ],
+                }),
+                device.createBindGroup({
+                    label: "Cell renderer bind group B",
+                    //  0 corresponds to the @group(0) that you typed in the shader.
+                    layout: cellPipeline.getBindGroupLayout(0),
+                    entries: [
+                        {
+                            // @binding() value you entered in the shader. In this case, 0
+                            binding: 0,
+                            resource: { buffer: uniformBuffer }
+                        },
+                        {
+                            // @binding() value you entered in the shader. In this case, 1
+                            binding: 1,
+                            resource: { buffer: cellStateStorage[1] }
+                        },
+                    ],
+                }),
+            ];
 
-        // Declaring the uniform in the shader doesn't connect it with the buffer that you created, though. In order  do that, you need to create and set a bind group.
-        // A bind group is a collection of resources that you want to make accessible to your shader at the same time. It can include several types of buffers, like your uniform buffer, and other resources like textures and samplers that are not covered here but are common parts of WebGPU rendering techniques.
-        // which is an opaque, immutable handle. You can't change the resources that a bind group points to after it's been created, though you can change the contents of those resources
-        //  For example, if you change the uniform buffer to contain a new grid size, that is reflected by future draw calls using this bind group.
-        const bindGroup = device.createBindGroup({
-            label: "Cell renderer bind group",
-            //  0 corresponds to the @group(0) that you typed in the shader.
-            layout: cellPipeline.getBindGroupLayout(0),
-            entries: [
-                {
-                    // @binding() value you entered in the shader. In this case, 0
-                    binding: 0,
-                    resource: { buffer: uniformBuffer }
-                },
-                {
-                    // @binding() value you entered in the shader. In this case, 1
-                    binding: 1,
-                    resource: { buffer: cellStateStorage }
-                },
-            ],
-        });
+            // drawing triangle
+            pass.setPipeline(cellPipeline);
+            //  You call it with 0 because this buffer corresponds to the 0th element in the current pipeline's vertex.buffers definition
+            pass.setVertexBuffer(0, vertexBuffer);
+            pass.setBindGroup(0, bindGroups[step % 2]);
 
-        // drawing triangle
-        pass.setPipeline(cellPipeline);
-        //  You call it with 0 because this buffer corresponds to the 0th element in the current pipeline's vertex.buffers definition
-        pass.setVertexBuffer(0, vertexBuffer);
-        pass.setBindGroup(0, bindGroup);
+            // To tell the GPU that you want enough instances of your square to fill the grid,
+            // add one argument to your existing draw call:
+            // draw 6 vertices with GRID_SIZE * GRID_SIZE times
+            pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
 
-        // To tell the GPU that you want enough instances of your square to fill the grid,
-        // add one argument to your existing draw call:
-        // draw 6 vertices with GRID_SIZE * GRID_SIZE times
-        pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE);
+            // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
+            pass.end();
 
-        // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
-        pass.end();
+            // command buffer store the commands
+            // then queue to GPU
+            // Once you submit a command buffer, it cannot be used again, so there's no need to hold on to it. If you want to submit more commands, you need to build another command buffer. That's why it's fairly common to see those two steps collapsed into one, as is done in the sample pages for this codelab:
+            const commandBuffer = encoder.finish();
+            device.queue.submit([commandBuffer]);
 
-        // command buffer store the commands
-        // then queue to GPU
-        // Once you submit a command buffer, it cannot be used again, so there's no need to hold on to it. If you want to submit more commands, you need to build another command buffer. That's why it's fairly common to see those two steps collapsed into one, as is done in the sample pages for this codelab:
-        const commandBuffer = encoder.finish();
-        device.queue.submit([commandBuffer]);
+            // After you submit the commands to the GPU, let JavaScript return control to the browser. At that point, the browser sees that you've changed the current texture of the context and updates the canvas to display that texture as an image. If you want to update the canvas contents again after that, you need to record and submit a new command buffer, calling context.getCurrentTexture() again to get a new texture for a render pass.
+        }
 
-        // After you submit the commands to the GPU, let JavaScript return control to the browser. At that point, the browser sees that you've changed the current texture of the context and updates the canvas to display that texture as an image. If you want to update the canvas contents again after that, you need to record and submit a new command buffer, calling context.getCurrentTexture() again to get a new texture for a render pass.
+        // Schedule updateGrid() to run repeatedly
+        setInterval(updateGrid, UPDATE_INTERVAL);
     </script>
 </body>
 
