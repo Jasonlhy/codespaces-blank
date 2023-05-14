@@ -10,6 +10,7 @@
 
 <body>
     <p>Following is rendered by Web GPU</p>
+    Update Interval: <input id="update-text" type="text" value="200"/><button id="update-button">Update</button><br>
     <canvas id="canvas" width="512" height="512">
 
     </canvas>
@@ -184,9 +185,10 @@
             `
         });
 
-        const UPDATE_INTERVAL = 200; // Update every 200ms (5 times/sec)
+        let UPDATE_INTERVAL = 200; // Update every 200ms (5 times/sec)
         let step = 0; // Track how many simulation steps have been run
-        
+        let renderIntervalId = undefined;
+
         // The render which clip the state with ping-pong pattern with different bind group
         function updateGrid() {
             step++;
@@ -289,8 +291,22 @@
             // After you submit the commands to the GPU, let JavaScript return control to the browser. At that point, the browser sees that you've changed the current texture of the context and updates the canvas to display that texture as an image. If you want to update the canvas contents again after that, you need to record and submit a new command buffer, calling context.getCurrentTexture() again to get a new texture for a render pass.
         }
 
+        function changeUpdateInterval() {
+            // UPDATE_INTERVAL = 100;
+            var interval = document.querySelector("#update-text").value;
+            if (parseFloat(interval) === NaN) {
+                alert("Failed to update the interval");
+            }
+            else {
+                UPDATE_INTERVAL = parseFloat(interval);
+                clearInterval(renderIntervalId);
+                renderIntervalId = setInterval(updateGrid, UPDATE_INTERVAL);
+            }
+        }
+        document.getElementById("update-button").onclick = changeUpdateInterval;
+
         // Schedule updateGrid() to run repeatedly
-        setInterval(updateGrid, UPDATE_INTERVAL);
+        renderIntervalId = setInterval(updateGrid, UPDATE_INTERVAL);
     </script>
 </body>
 
