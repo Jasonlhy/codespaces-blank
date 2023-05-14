@@ -9,18 +9,20 @@
 </head>
 
 <body>
-    <P>Hello</P>
+    <p>Following is rendered by GPU</p>
     <canvas id="canvas" width="512" height="512">
 
     </canvas>
     <script type="module">
+        // size of the grid for rendering the cell
+        const GRID_SIZE = 32;
         const canvas = document.querySelector("#canvas");
 
         if (!navigator.gpu) {
             throw new Error("WebGPU not supported on this browser.");
         }
 
-        // Once you know that WebGPU is supported by the browser, the first step in initializing WebGPU for your app is to request a GPUAdapter. 
+        // Once you know that WebGPU is supported by the browser, the first step in initializing WebGPU for your app is to request a GPUAdapter.
         // You can think of an adapter as WebGPU's representation of a specific piece of GPU hardware in your device.
         const adapter = await navigator.gpu.requestAdapter();
         if (!adapter) {
@@ -30,7 +32,7 @@
         const device = await adapter.requestDevice();
         console.log("device", device);
 
-        // the device that you are going to use the context with 
+        // the device that you are going to use the context with
         // the format, which is the texture format that the context should use.
         const context = canvas.getContext("webgpu");
         const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -77,6 +79,15 @@
             }],
         };
 
+        // You learned earlier that a different value from the vertex buffer is passed to every invocation of a vertex shader. A uniform is a value from a buffer that is the same for every invocation. They're useful for communicating values that are common for a piece of geometry (like its position), a full frame of animation (like the current time), or even the entire lifespan of the app (like a user preference).
+        const uniformArray = new Float32Array([GRID_SIZE, GRID_SIZE]); // [4,4]
+        const uniformBuffer = device.createBuffer({
+            label: "Grid Uniformats",
+            size: uniformArray.byteLength,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(uniformBuffer, /*bufferOffset=*/0, uniformArray);
+
         // Vertex processing shader
         //  as a vertex shader must return at least the final position of the vertex being processed in clip space. This is always given as a 4-dimensional vector. Vectors are such a common thing to use in shaders that they're treated as first-class primitives in the language, with their own types like vec4f for a 4-dimensional vector
 
@@ -84,14 +95,29 @@
         // Fragment shaders operate in a very similar way to vertex shaders, but rather than being invoked for every vertex, they're invoked for every pixel being drawn.
         // The GPU takes the output of the vertex shaders and triangulates it, creating triangles out of sets of three points. It then rasterizes each of those triangles by figuring out which pixels of the output color attachments are included in that triangle, and then calls the fragment shader once for each of those pixels. The fragment shader returns a color, typically calculated from values sent to it from the vertex shader and assets like textures, which the GPU writes to the color attachmen
         // but you can consider them to simply return one color for each pixel of each triangle.
+        // it divice the content igrid, pos + 1 means move 1 grid ...
         const cellShaderModule = device.createShaderModule({
             label: "Cell shader",
             code: `
+                @group(0) @binding(0) var<uniform> grid: vec2f;
+
                 @vertex
-                fn vertexMain(@location(0) pos: vec2f) -> 
+                fn vertexMain(@location(0) pos: vec2f,
+                              @builtin(instance_index) instance: u32) ->
                     @builtin(position) vec4f {
                     // return vec4f(pos.x, pos.y, 0, 1); // (X, Y, Z, W)
-                    return vec4f(pos, 0, 1); // (X, Y, Z, W)
+                    // return vec4f(pos, 0, 1); // (X, Y, Z, W)
+                    // return vec4f(pos / grid, 0, 1); // (X, Y, Z, W)
+
+                    // let cell = vec2f(1, 1); // Cell(1,1) in the image above
+                    // let cell = vec2f(i, i);
+                    let i = f32(instance); // Save the instance_index as a float
+                    let cell = vec2f(i % grid.x, floor(i / grid.x));
+                    let cellOffset = cell / grid * 2; // Compute the offset to cell in term of cas coordination
+                    let leftBottomPos = (pos + 1) / grid - 1; // Translate to the left bottom
+                    let gridPos = leftBottomPos + cellOffset; // Translate the left bottom with offset
+
+                    return vec4f(gridPos, 0, 1);
                 }
 
                 @fragment
@@ -103,8 +129,6 @@
 
         // Clear the canvas
         const encoder = device.createCommandEncoder();
-
-        // Render passes are when all drawing operations in WebGPU happen
 
         // A loadOp value of "clear" indicates that you want the texture to be cleared when the render pass starts.
         // A storeOp value of "store" indicates that once the render pass is finished you want the results of any drawing done during the render pass saved into the texture.
@@ -119,6 +143,7 @@
             ]
         });
 
+        // Render passes are when all drawing operations in WebGPU happen
         const cellPipeline = device.createRenderPipeline({
             label: "Cell pipeline",
             layout: "auto",
@@ -136,11 +161,31 @@
             }
         });
 
+        // Declaring the uniform in the shader doesn't connect it with the buffer that you created, though. In order  do that, you need to create and set a bind group.
+        // A bind group is a collection of resources that you want to make accessible to your shader at the same time. It can include several types of buffers, like your uniform buffer, and other resources like textures and samplers that are not covered here but are common parts of WebGPU rendering techniques.
+        // which is an opaque, immutable handle. You can't change the resources that a bind group points to after it's been created, though you can change the contents of those resources
+        //  For example, if you change the uniform buffer to contain a new grid size, that is reflected by future draw calls using this bind group.
+        const bindGroup = device.createBindGroup({
+            label: "Cell renderer bind group",
+            //  0 corresponds to the @group(0) that you typed in the shader.
+            layout: cellPipeline.getBindGroupLayout(0), 
+            entries: [{
+                // @binding() value you entered in the shader. In this case, 0
+                binding: 0,
+                resource: { buffer: uniformBuffer }
+            }],
+        });
+
         // drawing triangle
         pass.setPipeline(cellPipeline);
         //  You call it with 0 because this buffer corresponds to the 0th element in the current pipeline's vertex.buffers definition
         pass.setVertexBuffer(0, vertexBuffer);
-        pass.draw(vertices.length / 2); // 6 vertices
+        pass.setBindGroup(0, bindGroup);
+
+        // To tell the GPU that you want enough instances of your square to fill the grid, 
+        // add one argument to your existing draw call:
+        // draw 6 vertices with GRID_SIZE * GRID_SIZE times
+        pass.draw(vertices.length / 2, GRID_SIZE * GRID_SIZE); 
 
         // It's important to know that simply making these calls does not cause the GPU to actually do anything. They're just recording commands for the GPU to do later.
         pass.end();
